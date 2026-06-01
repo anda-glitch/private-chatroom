@@ -37,6 +37,12 @@ def compute_dh_shared_secret(private_key, other_public_key):
     # Hash to get a 32-byte key for AES-256
     return hashlib.sha256(str(secret).encode()).digest()
 
+def derive_keys(shared_secret):
+    """Derives separate 32-byte keys for text and voice messages from the shared secret."""
+    text_key = hashlib.sha256(shared_secret + b'text').digest()
+    voice_key = hashlib.sha256(shared_secret + b'voice').digest()
+    return text_key, voice_key
+
 
 # --- Authenticated Encryption Wrapper (Using Cryptography Lib) ---
 
@@ -101,9 +107,15 @@ if __name__ == "__main__":
     assert secA == secB
     print("DH Secret Match:", secA.hex())
     
+    text_keyA, voice_keyA = derive_keys(secA)
+    text_keyB, voice_keyB = derive_keys(secB)
+    assert text_keyA == text_keyB
+    assert voice_keyA == voice_keyB
+    print("Key derivation successful!")
+    
     print("Testing AES-CTR + HMAC (cryptography library)...")
     msg = b"Hello world! This is a secure message using standard cryptography."
-    enc = encrypt_message(msg, secA)
-    dec = decrypt_message(enc, secB)
+    enc = encrypt_message(msg, text_keyA)
+    dec = decrypt_message(enc, text_keyB)
     assert msg == dec
     print("Encryption/Decryption successful!")
