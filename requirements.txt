@@ -1,0 +1,5 @@
+cryptography
+PySocks
+pyaudio
+opuslib
+blessed
