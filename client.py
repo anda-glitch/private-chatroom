@@ -6,7 +6,8 @@ import pyaudio
 import opuslib
 import queue
 import time
-from blessed import Terminal
+import math
+import struct
 from blessed import Terminal
 from crypto import (
     generate_dh_private,
@@ -55,8 +56,17 @@ def safe_send(conn, payload):
             msg_queue.put(f"[!] Send error: {e}")
             return False
 
+def calculate_rms(pcm_data):
+    """Computes Root-Mean-Square (RMS) amplitude of 16-bit PCM data in pure Python."""
+    count = len(pcm_data) // 2
+    if count == 0:
+        return 0
+    samples = struct.unpack(f"<{count}h", pcm_data)
+    sum_squares = sum(s * s for s in samples)
+    return math.sqrt(sum_squares / count)
+
 def audio_playback_thread(p, conn_active):
-    """Pulls decompressed audio from queue and plays it."""
+    """Pulls decompressed audio from queue and plays it (continuous with silent frame padding)."""
     try:
         stream = p.open(format=AUDIO_FORMAT,
                         channels=CHANNELS,
@@ -68,18 +78,27 @@ def audio_playback_thread(p, conn_active):
         msg_queue.put(f"[!] Speaker Error: {e}")
         return
         
+    SILENT_FRAME = b'\x00' * (CHUNK * 2)
+    silence_count = 0
+        
     try:
         while is_running.is_set() and conn_active.is_set():
             try:
-                # Wait for audio data with timeout
-                compressed_data = audio_queue.get(timeout=0.5)
-                # Decode
-                pcm_data = decoder.decode(compressed_data, CHUNK)
-                stream.write(pcm_data)
+                # Use a short 20ms timeout (equal to Opus frame size) for low latency
+                compressed_data = audio_queue.get(timeout=0.02)
+                try:
+                    pcm_data = decoder.decode(bytes(compressed_data), CHUNK)
+                    stream.write(pcm_data)
+                    silence_count = 0
+                except Exception:
+                    stream.write(SILENT_FRAME)
             except queue.Empty:
-                continue
-            except Exception as e:
-                msg_queue.put(f"[!] Audio Playback Error: {e}")
+                silence_count += 1
+                # Pad silence to keep the audio stream active and avoid gaps/clicks, up to 1 second
+                if silence_count < 50:
+                    stream.write(SILENT_FRAME)
+    except Exception as e:
+        msg_queue.put(f"[!] Audio Playback Error: {e}")
     finally:
         try:
             stream.stop_stream()
@@ -88,7 +107,7 @@ def audio_playback_thread(p, conn_active):
             pass
 
 def audio_record_thread(p, conn, voice_key, conn_active):
-    """Records audio, compresses, encrypts, and sends over TCP."""
+    """Records audio, encodes using Opus, and transmits over TCP when speech is detected (VAD)."""
     try:
         stream = p.open(format=AUDIO_FORMAT,
                         channels=CHANNELS,
@@ -100,14 +119,28 @@ def audio_record_thread(p, conn, voice_key, conn_active):
         msg_queue.put(f"[!] Mic Error: {e} (Check microphone permissions!)")
         return
         
+    VAD_THRESHOLD = 500  # RMS amplitude (0-32767)
+    silence_packets = 0
+    MAX_SILENCE = 10  # ~600ms of silence allowed before skipping packets
+        
     try:
         while is_running.is_set() and conn_active.is_set():
             if is_muted:
-                time.sleep(0.1)
+                time.sleep(0.06)
                 continue
                 
             try:
                 pcm_data = stream.read(CHUNK, exception_on_overflow=False)
+                rms = calculate_rms(pcm_data)
+                
+                # Check VAD
+                if rms < VAD_THRESHOLD:
+                    silence_packets += 1
+                    if silence_packets > MAX_SILENCE:
+                        continue  # Skip sending silent packet
+                else:
+                    silence_packets = 0
+                
                 compressed_data = encoder.encode(pcm_data, CHUNK)
                 
                 # Encrypt and send as type V (Voice)
@@ -118,7 +151,7 @@ def audio_record_thread(p, conn, voice_key, conn_active):
                     break
             except Exception as e:
                 msg_queue.put(f"[!] Audio Record Error: {e}")
-                time.sleep(1) # avoid spamming if there's a persistent error
+                time.sleep(0.5)
     finally:
         try:
             stream.stop_stream()
@@ -322,6 +355,19 @@ def main():
                 t_recv.start()
                 t_audio_play.start()
                 t_audio_rec.start()
+                
+                # Health Check: verify threads started correctly
+                time.sleep(0.5)
+                if not t_audio_play.is_alive():
+                    print("[!] Audio playback thread died on startup (mic/speaker issue).")
+                    conn_active.clear()
+                    conn.close()
+                    sys.exit(1)
+                if not t_audio_rec.is_alive():
+                    print("[!] Audio record thread died on startup (microphone permission/device issue).")
+                    conn_active.clear()
+                    conn.close()
+                    sys.exit(1)
                 
                 # Start UI (blocks until leave or disconnect)
                 ui_loop(conn, text_key, nick, conn_active)

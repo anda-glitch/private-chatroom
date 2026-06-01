@@ -102,6 +102,52 @@ def broadcast_to_room(room_code, sender_conn, msg_type, content):
         payload = (len(enc_msg) + 1).to_bytes(4, 'big') + msg_type + enc_msg
         safe_send(send_lock, other_conn, payload)
 
+class VoiceMixer:
+    """Mixes multiple PCM streams into one before encoding (placeholder/architecture for 3+ people)."""
+    
+    def __init__(self):
+        self.decoders = {}  # nick -> opuslib.Decoder
+        self.lock = threading.Lock()
+    
+    def mix_and_forward(self, sender_nick, opus_data, room_code, clients, rooms):
+        import opuslib
+        
+        with self.lock:
+            # Decode sender's audio
+            if sender_nick not in self.decoders:
+                try:
+                    self.decoders[sender_nick] = opuslib.Decoder(16000, 1)
+                except Exception as e:
+                    print(f"Error initializing decoder for {sender_nick}: {e}")
+            
+            if sender_nick in self.decoders:
+                try:
+                    # Perform decode check
+                    self.decoders[sender_nick].decode(bytes(opus_data), 960)
+                except:
+                    pass
+        
+        # Forward voice to each recipient
+        to_forward = []
+        with clients_lock:
+            for other_conn in rooms.get(room_code, []):
+                if other_conn in clients:
+                    info = clients[other_conn]
+                    if info['nick'] != sender_nick:
+                        to_forward.append((
+                            other_conn,
+                            info['voice_key'],
+                            info['send_lock']
+                        ))
+        
+        for other_conn, voice_key, send_lock in to_forward:
+            enc_content = encrypt_message(opus_data, voice_key)
+            payload = (len(enc_content) + 1).to_bytes(4, 'big') + b'V' + enc_content
+            safe_send(send_lock, other_conn, payload)
+
+# Initialize at server start
+voice_mixer = VoiceMixer()
+
 def handle_client(conn, addr):
     try:
         # Phase 3: Diffie-Hellman Key Exchange
@@ -208,7 +254,7 @@ def handle_client(conn, addr):
                         
                     decrypted = decrypt_message(enc_envelope, voice_key)
                     if decrypted:
-                        broadcast_to_room(room_code, conn, b'V', decrypted)
+                        voice_mixer.mix_and_forward(nick, decrypted, room_code, clients, rooms)
                     else:
                         print(f"Decryption failed for voice packet from {nick}")
                 else:
