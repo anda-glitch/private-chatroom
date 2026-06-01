@@ -200,7 +200,7 @@ def ui_loop(conn, text_key, nick, conn_active):
                 
             print(term.move_y(term.height - 2) + term.blue("─" * term.width))
             
-            status = term.red("[MUTED (F2 to unmute)]") if is_muted else term.green("[MIC ON (F2 to mute)]")
+            status = term.red("[MUTED (Ctrl+T or /mute)]") if is_muted else term.green("[MIC ON (Ctrl+T or /mute)]")
             prompt = f"{status} {nick} > {input_text}"
             print(term.move_y(term.height - 1) + prompt + term.clear_eol, end='', flush=True)
             
@@ -214,6 +214,10 @@ def ui_loop(conn, text_key, nick, conn_active):
                                 is_running.clear()
                                 conn_active.clear()
                                 break
+                            elif input_text == "/mute":
+                                is_muted = not is_muted
+                                input_text = ""
+                                continue
                             
                             # Re-draw immediately to feel responsive
                             messages.append(f"You: {input_text}")
@@ -226,10 +230,11 @@ def ui_loop(conn, text_key, nick, conn_active):
                             input_text = ""
                     elif val.name == "KEY_BACKSPACE":
                         input_text = input_text[:-1]
-                    elif val.name == "KEY_F2":
-                        is_muted = not is_muted
                 else:
-                    input_text += val
+                    if val == '\x14': # Ctrl+T
+                        is_muted = not is_muted
+                    else:
+                        input_text += val
 
 def main():
     if len(sys.argv) < 3:

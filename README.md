@@ -64,7 +64,7 @@ python3 client.py 127.0.0.1 A1B2C3
 ### Controls
 
 - Type messages and press **Enter** to send.
-- Press **Shift + M** (capital `M`) to toggle microphone mute.
+- Press **Ctrl + T** or type `/mute` and press **Enter** to toggle microphone mute (highly compatible with mobile/Android virtual keyboards).
 - Type `/leave` and press **Enter** to safely exit the chatroom.
 
 ## Technical Details
